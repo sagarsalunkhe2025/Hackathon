@@ -1,0 +1,35 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "coreclr",
+            "request": "launch",
+            "name": "Backend",
+            "program": "${workspaceFolder}/backend/src/RoleAssistant.Api/bin/Debug/net9.0/RoleAssistant.Api.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}/backend/src/RoleAssistant.Api",
+            "stopAtEntry": false,
+            "preLaunchTask": "build api",
+            "symbolOptions": {
+                "searchMicrosoftSymbolServer": false,
+                "searchNuGetOrgSymbolServer": false
+            }
+        },
+        {
+            "type": "node-terminal",
+            "request": "launch",
+            "name": "Frontend",
+            "command": "npm run dev",
+            "cwd": "${workspaceFolder}/frontend",
+            "skipFiles": [
+                "<node_internals>/**"
+            ]
+        }
+    ],
+    "compounds": [
+        {
+            "name": "Full Stack (Backend + Frontend)",
+            "configurations": ["Backend", "Frontend"]
+        }
+    ]
+}
