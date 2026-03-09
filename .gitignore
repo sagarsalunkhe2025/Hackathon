@@ -1,0 +1,17 @@
+# Backend - .NET build outputs
+backend/**/bin/
+backend/**/obj/
+
+# Frontend - Node.js dependencies and build outputs
+frontend/node_modules/
+frontend/dist/
+
+# IDE / OS
+*.suo
+*.user
+.vs/
+.vscode/
+*.swp
+*~
+Thumbs.db
+.DS_Store
