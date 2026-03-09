@@ -3,6 +3,7 @@
 export interface ChatRequest {
   prompt: string;
   category?: string;
+  history?: { role: string; content: string }[];
 }
 
 export interface ChatResponse {
@@ -11,8 +12,16 @@ export interface ChatResponse {
   data?: Record<string, unknown>[];
   analysisType?: string;
   insights?: AnalysisInsight[];
+  chartConfig?: ChartConfig;
   success: boolean;
   error?: string;
+}
+
+export interface ChartConfig {
+  type: 'bar' | 'pie' | 'line';
+  title: string;
+  categoryKey: string;
+  dataKey: string;
 }
 
 export interface AnalysisInsight {

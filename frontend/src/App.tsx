@@ -5,6 +5,7 @@ import {
   type Message,
   type ChatResponse,
 } from './api';
+import ChartRenderer from './ChartRenderer';
 
 /* ───── Analysis sidebar items ───── */
 const ANALYSES: { key: string; label: string; description: string }[] = [
@@ -62,7 +63,16 @@ export default function App() {
       setLoading(true);
 
       try {
-        const response = await sendChatMessage({ prompt, category: category || undefined });
+        // Build conversation history from previous messages (last 10)
+        const history = messages
+          .filter((m) => !m.loading)
+          .slice(-10)
+          .map((m) => ({
+            role: m.role,
+            content: m.role === 'assistant' ? (m.response?.summary ?? m.content) : m.content,
+          }));
+
+        const response = await sendChatMessage({ prompt, category: category || undefined, history });
         setMessages((prev) =>
           prev.map((m) =>
             m.id === loadingMsg.id
@@ -252,6 +262,11 @@ function AssistantMessage({ response }: { response?: ChatResponse }) {
     <div className="message-assistant">
       {/* Summary */}
       <div className="summary-text">{response.summary}</div>
+
+      {/* Chart Visualization */}
+      {response.chartConfig && data.length > 0 && (
+        <ChartRenderer chartConfig={response.chartConfig} data={data} />
+      )}
 
       {/* Insights */}
       {response.insights && response.insights.length > 0 && (

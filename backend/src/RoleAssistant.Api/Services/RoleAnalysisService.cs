@@ -11,26 +11,37 @@ public class RoleAnalysisService
     {
         ["duplicates"] = new(
             "Duplicate Roles Detection",
-            "Finds roles that have identical authorization sets (same AuthorizationsHash), indicating redundant role definitions.",
+            "Finds users who hold duplicate roles (roles with identical authorization sets), aggregated per user.",
             """
-            SELECT 
-                r1.RoleName AS [Role 1],
-                r2.RoleName AS [Role 2],
-                r1.AuthorizationsHash AS [Auth Hash],
-                r1.Description AS [Role 1 Description],
-                r2.Description AS [Role 2 Description],
-                rt.Description AS [Role Type]
-            FROM dbo.SapRoles r1
-            INNER JOIN dbo.SapRoles r2 
-                ON r1.AuthorizationsHash = r2.AuthorizationsHash 
-                AND r1.RoleId < r2.RoleId
-                AND r1.SystemId = r2.SystemId
-            LEFT JOIN dbo.RoleTypes rt ON r1.RoleTypeId = rt.RoleTypeId
-            WHERE r1.IsRoleDeleted = 0 
-                AND r2.IsRoleDeleted = 0
-                AND r1.AuthorizationsHash IS NOT NULL
-                AND r1.AuthorizationsHash != ''
-            ORDER BY r1.AuthorizationsHash
+            ;WITH DuplicatePairs AS (
+                SELECT 
+                    u.UserId,
+                    u.SapUserName,
+                    u.FullName,
+                    u.Department,
+                    r1.RoleName AS RoleName1,
+                    r2.RoleName AS RoleName2,
+                    r1.AuthorizationsHash
+                FROM dbo.Users u
+                INNER JOIN dbo.SapUserRoles ur1 ON u.UserId = ur1.UserId
+                INNER JOIN dbo.SapRoles r1 ON ur1.RoleName = r1.RoleName AND r1.IsRoleDeleted = 0
+                INNER JOIN dbo.SapUserRoles ur2 ON u.UserId = ur2.UserId
+                INNER JOIN dbo.SapRoles r2 ON ur2.RoleName = r2.RoleName AND r2.IsRoleDeleted = 0
+                WHERE r1.AuthorizationsHash = r2.AuthorizationsHash
+                    AND r1.RoleName < r2.RoleName
+                    AND r1.AuthorizationsHash IS NOT NULL
+                    AND r1.AuthorizationsHash != ''
+                    AND u.IsDeleted = 0
+            )
+            SELECT TOP 100
+                SapUserName AS [SAP User Name],
+                ISNULL(FullName, '') AS [Full Name],
+                ISNULL(Department, '') AS [Department],
+                COUNT(*) AS [Duplicate Role Pairs],
+                COUNT(DISTINCT AuthorizationsHash) AS [Distinct Auth Hashes]
+            FROM DuplicatePairs
+            GROUP BY UserId, SapUserName, FullName, Department
+            ORDER BY COUNT(*) DESC
             """
         ),
 

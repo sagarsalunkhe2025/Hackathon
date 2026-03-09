@@ -65,14 +65,36 @@ public class AnalysisController : ControllerBase
                 resultsJson,
                 data.Count);
 
-            // Parse insights
+            // Parse insights and chart config
             List<AnalysisInsight>? insights = null;
+            ChartConfig? chartConfig = null;
             try
             {
-                insights = JsonSerializer.Deserialize<List<AnalysisInsight>>(insightsJson, new JsonSerializerOptions
+                using var doc = JsonDocument.Parse(insightsJson);
+                var root = doc.RootElement;
+
+                if (root.ValueKind == JsonValueKind.Object)
                 {
-                    PropertyNameCaseInsensitive = true
-                });
+                    // New format: { insights: [...], chartConfig: {...} }
+                    if (root.TryGetProperty("insights", out var insightsEl))
+                    {
+                        insights = JsonSerializer.Deserialize<List<AnalysisInsight>>(insightsEl.GetRawText(),
+                            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                    }
+                    if (root.TryGetProperty("chartConfig", out var chartEl))
+                    {
+                        chartConfig = JsonSerializer.Deserialize<ChartConfig>(chartEl.GetRawText(),
+                            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                        if (chartConfig is not null && chartConfig.Type == "none")
+                            chartConfig = null;
+                    }
+                }
+                else if (root.ValueKind == JsonValueKind.Array)
+                {
+                    // Legacy format: [{ title, description, severity }]
+                    insights = JsonSerializer.Deserialize<List<AnalysisInsight>>(insightsJson,
+                        new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                }
             }
             catch (JsonException ex)
             {
@@ -86,7 +108,8 @@ public class AnalysisController : ControllerBase
                 SqlQuery = analysis.Sql,
                 Data = data,
                 AnalysisType = request.AnalysisType,
-                Insights = insights
+                Insights = insights,
+                ChartConfig = chartConfig
             });
         }
         catch (Exception ex)
