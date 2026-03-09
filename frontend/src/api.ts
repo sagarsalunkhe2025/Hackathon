@@ -43,6 +43,14 @@ export interface Message {
   loading?: boolean;
 }
 
+export interface ChatSession {
+  id: string;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+  messages: Message[];
+}
+
 const API_BASE = '/api';
 
 export async function sendChatMessage(request: ChatRequest): Promise<ChatResponse> {

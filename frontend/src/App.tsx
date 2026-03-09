@@ -4,6 +4,7 @@ import {
   runAnalysis,
   type Message,
   type ChatResponse,
+  type ChatSession,
 } from './api';
 import ChartRenderer from './ChartRenderer';
 
@@ -35,20 +36,200 @@ const QUICK_PROMPTS = [
   'Top 10 departments by average role count per user',
 ];
 
+const SESSIONS_KEY = 'role-assistant-sessions';
+const ACTIVE_SESSION_KEY = 'role-assistant-active-session';
+const THEME_KEY = 'role-assistant-theme';
+
+function generateSessionId() {
+  return `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createNewSession(name?: string): ChatSession {
+  const now = Date.now();
+  return {
+    id: generateSessionId(),
+    name: name ?? `Chat ${new Date(now).toLocaleDateString()} ${new Date(now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+    createdAt: now,
+    updatedAt: now,
+    messages: [],
+  };
+}
+
+function loadSessions(): ChatSession[] {
+  try {
+    const raw = localStorage.getItem(SESSIONS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as ChatSession[];
+    // Strip loading messages
+    return parsed.map((s) => ({
+      ...s,
+      messages: s.messages.filter((m) => !m.loading),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function saveSessions(sessions: ChatSession[]) {
+  try {
+    // Cap messages per session to avoid storage bloat
+    const toSave = sessions.map((s) => ({
+      ...s,
+      messages: s.messages.filter((m) => !m.loading).slice(-100),
+    }));
+    localStorage.setItem(SESSIONS_KEY, JSON.stringify(toSave));
+  } catch {
+    // localStorage full or unavailable
+  }
+}
+
+function loadActiveSessionId(): string | null {
+  try {
+    return localStorage.getItem(ACTIVE_SESSION_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function migrateOldHistory(): ChatSession | null {
+  try {
+    const raw = localStorage.getItem('role-assistant-chat-history');
+    if (!raw) return null;
+    const msgs = JSON.parse(raw) as Message[];
+    if (!msgs.length) return null;
+    const session = createNewSession('Imported Chat');
+    session.messages = msgs.filter((m) => !m.loading);
+    localStorage.removeItem('role-assistant-chat-history');
+    return session;
+  } catch {
+    return null;
+  }
+}
+
+function loadTheme(): 'light' | 'dark' {
+  try {
+    const saved = localStorage.getItem(THEME_KEY);
+    if (saved === 'dark' || saved === 'light') return saved;
+    if (window.matchMedia?.('(prefers-color-scheme: dark)').matches) return 'dark';
+  } catch { /* ignore */ }
+  return 'light';
+}
+
+function initSessions(): { sessions: ChatSession[]; activeId: string } {
+  let sessions = loadSessions();
+  const migrated = migrateOldHistory();
+  if (migrated) sessions = [migrated, ...sessions];
+  if (sessions.length === 0) {
+    const first = createNewSession();
+    sessions = [first];
+  }
+  const savedId = loadActiveSessionId();
+  const activeId = sessions.find((s) => s.id === savedId)?.id ?? sessions[0].id;
+  return { sessions, activeId };
+}
+
 let msgCounter = 0;
 const newId = () => `msg-${++msgCounter}-${Date.now()}`;
 
 export default function App() {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [sessionsState] = useState(initSessions);
+  const [activeSessionId, setActiveSessionIdRaw] = useState(sessionsState.activeId);
+  const [sessions, setSessions] = useState<ChatSession[]>(sessionsState.sessions);
   const [input, setInput] = useState('');
   const [category, setCategory] = useState('');
   const [loading, setLoading] = useState(false);
+  const [theme, setTheme] = useState<'light' | 'dark'>(loadTheme);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
+  const activeSession = sessions.find((s) => s.id === activeSessionId) ?? sessions[0];
+  const messages = activeSession?.messages ?? [];
+
+  const setActiveSessionId = (id: string) => {
+    setActiveSessionIdRaw(id);
+    localStorage.setItem(ACTIVE_SESSION_KEY, id);
+  };
+
+  const setMessages = (updater: Message[] | ((prev: Message[]) => Message[])) => {
+    setSessions((prev) =>
+      prev.map((s) => {
+        if (s.id !== activeSessionId) return s;
+        const newMsgs = typeof updater === 'function' ? updater(s.messages) : updater;
+        return { ...s, messages: newMsgs, updatedAt: Date.now() };
+      })
+    );
+  };
+
+  /* Apply theme to document */
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem(THEME_KEY, theme);
+  }, [theme]);
+
+  /* Persist sessions to localStorage */
+  useEffect(() => {
+    saveSessions(sessions);
+  }, [sessions]);
 
   /* auto-scroll */
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  /* focus rename input */
+  useEffect(() => {
+    if (renamingId) renameInputRef.current?.focus();
+  }, [renamingId]);
+
+  const toggleTheme = () => setTheme((t) => (t === 'light' ? 'dark' : 'light'));
+
+  /* ── Session management ── */
+  const handleNewChat = () => {
+    const newSession = createNewSession();
+    setSessions((prev) => [newSession, ...prev]);
+    setActiveSessionId(newSession.id);
+  };
+
+  const handleSwitchSession = (id: string) => {
+    if (id === activeSessionId) return;
+    setActiveSessionId(id);
+  };
+
+  const handleDeleteSession = (id: string) => {
+    setSessions((prev) => {
+      const remaining = prev.filter((s) => s.id !== id);
+      if (remaining.length === 0) {
+        const fresh = createNewSession();
+        setActiveSessionId(fresh.id);
+        return [fresh];
+      }
+      if (id === activeSessionId) {
+        setActiveSessionId(remaining[0].id);
+      }
+      return remaining;
+    });
+  };
+
+  const handleStartRename = (id: string, currentName: string) => {
+    setRenamingId(id);
+    setRenameValue(currentName);
+  };
+
+  const handleFinishRename = () => {
+    if (renamingId && renameValue.trim()) {
+      setSessions((prev) =>
+        prev.map((s) => (s.id === renamingId ? { ...s, name: renameValue.trim() } : s))
+      );
+    }
+    setRenamingId(null);
+    setRenameValue('');
+  };
+
+  const clearChat = () => {
+    setMessages([]);
+  };
 
   /* ── handle chat submit ── */
   const handleSubmit = useCallback(
@@ -150,6 +331,7 @@ export default function App() {
           <p>AI-powered role governance analysis</p>
         </div>
         <div className="sidebar-content">
+          {/* ── Quick Analyses ── */}
           <div className="sidebar-section">Quick Analyses</div>
           {ANALYSES.map((a) => (
             <button
@@ -162,6 +344,63 @@ export default function App() {
               <span className="desc">{a.description}</span>
             </button>
           ))}
+
+          {/* ── Chat Sessions ── */}
+          <div className="sidebar-section-row">
+            <span className="sidebar-section">Chat Sessions</span>
+            <button className="new-chat-btn" onClick={handleNewChat} title="New chat">
+              ＋ New
+            </button>
+          </div>
+          <div className="session-list">
+            {sessions.map((s) => (
+              <div
+                key={s.id}
+                className={`session-item ${s.id === activeSessionId ? 'active' : ''}`}
+                onClick={() => handleSwitchSession(s.id)}
+              >
+                {renamingId === s.id ? (
+                  <input
+                    ref={renameInputRef}
+                    className="session-rename-input"
+                    value={renameValue}
+                    onChange={(e) => setRenameValue(e.target.value)}
+                    onBlur={handleFinishRename}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleFinishRename();
+                      if (e.key === 'Escape') { setRenamingId(null); setRenameValue(''); }
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                ) : (
+                  <>
+                    <div className="session-info">
+                      <span className="session-name" title={s.name}>💬 {s.name}</span>
+                      <span className="session-meta">
+                        {s.messages.filter((m) => !m.loading).length} messages
+                      </span>
+                    </div>
+                    <div className="session-actions">
+                      <button
+                        className="session-action-btn"
+                        title="Rename"
+                        onClick={(e) => { e.stopPropagation(); handleStartRename(s.id, s.name); }}
+                      >
+                        ✏️
+                      </button>
+                      <button
+                        className="session-action-btn delete"
+                        title="Delete"
+                        onClick={(e) => { e.stopPropagation(); handleDeleteSession(s.id); }}
+                      >
+                        🗑️
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       </aside>
 
@@ -179,6 +418,20 @@ export default function App() {
                 {c.label}
               </button>
             ))}
+          </div>
+          <div className="header-actions">
+            {messages.length > 0 && (
+              <button className="clear-chat-btn" onClick={clearChat}>
+                🗑️ Clear
+              </button>
+            )}
+            <button
+              className="theme-toggle"
+              onClick={toggleTheme}
+              title={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}
+            >
+              {theme === 'light' ? '🌙' : '☀️'}
+            </button>
           </div>
         </header>
 
