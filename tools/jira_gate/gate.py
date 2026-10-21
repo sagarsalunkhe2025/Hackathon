@@ -27,8 +27,8 @@ MAX_TICKETS = 10
 MAX_RESPONSE_BYTES = 65_536
 HTTP_TIMEOUT_SECONDS = 10
 SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
-TITLE_TICKET_RE = re.compile(
-    r"(?<![A-Za-z0-9])([A-Z][A-Z0-9]{0,9}-[A-Z0-9-]*)(?![A-Za-z0-9])",
+GENERIC_TICKET_RE = re.compile(
+    r"(?<![A-Za-z0-9-])([A-Z][A-Z0-9]{0,9}-[0-9][A-Z0-9-]*)(?![A-Za-z0-9-])",
     re.IGNORECASE,
 )
 
@@ -111,8 +111,16 @@ def parse_title_tickets(title: Any, prefix: str) -> list[str]:
     expected_prefix = prefix.upper()
     tickets: list[str] = []
     seen: set[str] = set()
-    for match in TITLE_TICKET_RE.finditer(title):
-        candidate = match.group(1).upper()
+    configured_ticket_re = re.compile(
+        rf"(?<![A-Za-z0-9-])({re.escape(expected_prefix)}-[A-Z0-9-]*)(?![A-Za-z0-9-])",
+        re.IGNORECASE,
+    )
+    candidates = [
+        (match.start(), match.group(1).upper())
+        for pattern in (configured_ticket_re, GENERIC_TICKET_RE)
+        for match in pattern.finditer(title)
+    ]
+    for _, candidate in sorted(candidates):
         valid = re.fullmatch(
             rf"{re.escape(expected_prefix)}-[1-9][0-9]{{0,8}}",
             candidate,

@@ -111,6 +111,12 @@ class TitleParserTests(unittest.TestCase):
     def test_prefix_is_configurable(self):
         self.assertEqual(gate.parse_title_tickets("ABC-123", "ABC"), ["ABC-123"])
 
+    def test_hyphenated_prose_is_not_treated_as_a_ticket(self):
+        self.assertEqual(
+            gate.parse_title_tickets("DEMO-101: non-functional change", "DEMO"),
+            ["DEMO-101"],
+        )
+
 
 class JiraFieldTests(unittest.TestCase):
     def test_reads_only_exact_custom_field_option_value(self):
