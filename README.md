@@ -151,7 +151,7 @@ credentials or network calls are needed for tests.
    restrictions separate from this test gate. This is a personal public
    repository; do not assume an organization team exists or configure a team
    bypass. Test with a write collaborator who is not on any bypass list. The
-   gate's proof does not require a bypass actor .
+   gate's proof does not require a bypass actor.
 5. Open distinct-head test PRs with synthetic titles, then verify both the
    status and the ruleset's blocking behavior:
 
