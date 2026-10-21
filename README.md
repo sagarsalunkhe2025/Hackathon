@@ -118,6 +118,110 @@ Open **http://localhost:5173** in your browser.
 - "How many roles does each user group have on average?"
 - "Find users with roles that expire in the next 30 days"
 
+## Jira target-version gate proof of concept
+
+This experiment is isolated under `.github/workflows/jira-target-version.yml` and
+`tools/jira_gate/`. It does not change the application or any other repository.
+It only validates open PRs targeting `test-jira-gate-2026.4.0` and compares the
+configured single-select field's `value` with `2026.4.0` (the default field is
+`customfield_12490`). It never reads Fix Version/s or falls back to another field.
+
+The default mode is **mock**. `DEMO-101` is a deterministic synthetic match;
+`DEMO-102`, `DEMO-103`, `DEMO-404`, and `DEMO-500` demonstrate a mismatch, absent
+field, nonexistent issue, and synthetic API error. A `MOCK:` status is only an
+enforcement demonstration; it is not evidence of live Jira integration. No Jira
+credentials or network calls are needed for tests.
+
+### Install and test
+
+1. Review and merge this installation PR into the repository's default `main`
+   branch; do not enable auto-merge. The initial PR cannot run a
+   `pull_request_target` workflow that is not yet installed on `main`, and
+   `workflow_dispatch` is available only after the workflow is on the default
+   branch. Use a separate, subsequent test PR.
+2. After installation, create `test-jira-gate-2026.4.0` from `main`. The gate
+   does not create branches or alter rulesets.
+3. Create a test-only branch ruleset, initially **Disabled**, targeting exactly
+   `test-jira-gate-2026.4.0`. Require the exact status context
+   `jira-target-version`; the workflow job is named **Trusted Jira validator**.
+   After its first run, select the status published by GitHub Actions as the
+   expected source if the ruleset UI offers that choice. Enable the ruleset only
+   after verifying the published context.
+4. Keep baseline PR reviews, build checks, force-push restrictions, and deletion
+   restrictions separate from this test gate. This is a personal public
+   repository; do not assume an organization team exists or configure a team
+   bypass. Test with a write collaborator who is not on any bypass list. The
+   gate's proof does not require a bypass actor.
+5. Open distinct-head test PRs with synthetic titles, then verify both the
+   status and the ruleset's blocking behavior:
+
+   | Synthetic PR title | Expected gate result |
+   | --- | --- |
+   | `DEMO-101: synthetic matching example` | `MOCK:` pass |
+   | `DEMO-102: synthetic mismatch example` | `MOCK:` failure |
+   | `DEMO-101 and DEMO-102: synthetic multiple-ticket example` | failure; every ticket must match |
+   | `Synthetic title without a ticket` | failure |
+   | `DEMO-103: synthetic absent-field example` | failure |
+   | `DEMO-404: synthetic nonexistent-ticket example` | failure |
+   | `DEMO-500: synthetic API-error example` | failure |
+
+   Also edit a title, push a new commit, and manually re-run **Jira target-version
+   gate** from `main` with the PR number. The gate re-fetches current PR metadata,
+   validates the current head SHA, and reports the exact status on that SHA.
+   Confirm a matching status blocks/permits merging only as expected alongside
+   the other rules.
+
+### Optional private live-mode configuration
+
+Live mode is opt-in and is not needed to install or test the mock gate. Because
+this is a **public repository**, Actions logs and commit statuses may be visible
+publicly. Prefer a private test repository for corporate Jira integration, and
+obtain the organization's permission before creating Jira credentials. Never
+put a Jira URL, ticket prefix, real ticket key/title, response, or credential in
+source, fixtures, PR text, or logs.
+
+Only after review and approval, configure trusted repository Actions variables:
+
+| Variable | Purpose |
+| --- | --- |
+| `JIRA_GATE_MODE` | Set to `live`; unset defaults to `mock` |
+| `JIRA_BASE_URL` | Approved HTTPS Jira base URL, with no path, query, or fragment |
+| `JIRA_ALLOWED_HOST` | Exact lowercase hostname approved for `JIRA_BASE_URL` |
+| `JIRA_GATE_VERSION` | Expected option text; defaults to `2026.4.0` |
+| `JIRA_FIELD_ID` | Custom field ID; defaults to `customfield_12490` |
+| `JIRA_TICKET_PREFIX` | Approved PR-title ticket prefix; defaults to synthetic `DEMO` |
+
+Add Actions secrets `JIRA_EMAIL` and `JIRA_API_TOKEN` for a read-only Jira service
+account. Configure the real prefix and approved Jira URL privately in repository
+settings; do not put either in a commit or PR. The workflow only makes bounded
+HTTPS GET requests to the exact approved host, rejects redirects, and emits
+generic live-mode status/log messages. Live validation rejects fork PRs; there
+is no public-fork Jira lookup policy in this proof of concept.
+
+### Limits
+
+Jira-only field changes do not generate PR events. Manual revalidation is
+supported, but a previous pass can become stale until it is run. The status is
+a snapshot, not continuous or atomic merge-time Jira validation; a Jira change
+or PR update can race a merge. Duplicate PRs sharing the same head SHA also
+share a commit-status context, so their independent results cannot be isolated
+by this status alone. These limitations must be addressed before any production
+rollout; this proof of concept does not configure the production branch.
+
+The workflow uses `pull_request_target` only for trusted default-branch code:
+it checks out the workflow revision, never the PR head, and does not run PR
+dependencies. Manual dispatch is rejected unless selected from the current
+default branch. GitHub's public-fork approval controls for ordinary
+`pull_request` workflows are not a safety net for this privileged event; review
+the repository's Actions event policy and confirm `pull_request_target` is
+allowed. GitHub documents a default public-repository policy for this event
+with enforcement scheduled for November 2, 2026 for affected repositories.
+See GitHub's documentation on
+[pull_request_target](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target),
+[manually running workflows](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow),
+[approving fork workflow runs](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/approve-runs-from-forks),
+and [commit statuses](https://docs.github.com/en/rest/commits/statuses).
+
 ## Project Structure
 
 ```

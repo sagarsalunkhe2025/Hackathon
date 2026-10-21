@@ -1,0 +1,27 @@
+{
+  "DEMO-101": {
+    "fields": {
+      "customfield_12490": {
+        "value": "2026.4.0"
+      }
+    }
+  },
+  "DEMO-102": {
+    "fields": {
+      "customfield_12490": {
+        "value": "2026.3.1"
+      }
+    }
+  },
+  "DEMO-103": {
+    "fields": {
+      "customfield_12490": null
+    }
+  },
+  "DEMO-404": {
+    "error": "synthetic_not_found"
+  },
+  "DEMO-500": {
+    "error": "synthetic_api_error"
+  }
+}
