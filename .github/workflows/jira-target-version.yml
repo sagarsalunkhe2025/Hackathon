@@ -1,0 +1,193 @@
+---
+name: Jira target-version gate
+
+"on":
+  pull_request_target:
+    branches:
+      - test-jira-gate-2026.4.0
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - edited
+      - ready_for_review
+      - converted_to_draft
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open pull request number to revalidate
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: >-
+    jira-target-version-${{ github.event.pull_request.number ||
+    inputs.pr_number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    name: Guard workflow ref
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Verify repository and manual ref
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        with:
+          script: |
+            const expectedRepository = "sagarsalunkhe2025/Hackathon";
+            const actualRepository =
+              `${context.repo.owner}/${context.repo.repo}`.toLowerCase();
+            if (actualRepository !== expectedRepository.toLowerCase()) {
+              core.setFailed(
+                "This workflow is restricted to its configured repository."
+              );
+              return;
+            }
+
+            if (context.eventName === "workflow_dispatch") {
+              const result = await github.rest.repos.get(context.repo);
+              const repository = result.data;
+              if (context.ref !== `refs/heads/${repository.default_branch}`) {
+                core.setFailed(
+                  "Manual validation must use the default branch."
+                );
+              }
+            }
+
+  validate:
+    name: Trusted Jira validator
+    needs: guard
+    if: >-
+      needs.guard.result == 'success' &&
+      (github.event_name != 'workflow_dispatch' ||
+      github.ref == format(
+      'refs/heads/{0}', github.event.repository.default_branch))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - name: Mark current PR head pending
+        id: pending
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        with:
+          script: |
+            const number = context.eventName === "workflow_dispatch"
+              ? Number(context.payload.inputs?.pr_number)
+              : Number(context.payload.pull_request?.number);
+            if (!Number.isSafeInteger(number) || number <= 0) {
+              core.setFailed("A valid pull request number is required.");
+              return;
+            }
+
+            const result = await github.rest.pulls.get({
+              ...context.repo,
+              pull_number: number
+            });
+            const pull = result.data;
+            const headSha = pull.head?.sha;
+            if (!/^[0-9a-f]{40}$/i.test(headSha || "")) {
+              core.setFailed("The pull request has no valid current head.");
+              return;
+            }
+            const snapshot = [
+              pull.number,
+              pull.state,
+              pull.title,
+              pull.head.sha,
+              pull.base.ref,
+              pull.base.repo?.full_name,
+              pull.head.repo?.full_name ?? null
+            ];
+            await github.rest.repos.createCommitStatus({
+              ...context.repo,
+              sha: headSha,
+              state: "pending",
+              context: "jira-target-version",
+              description: "Jira target-version validation pending"
+            });
+            core.setOutput("snapshot", JSON.stringify(snapshot));
+
+      - name: Check out trusted workflow revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Run validator tests
+        run: python3 -m unittest discover -s tools/jira_gate/tests -v
+
+      - name: Validate Jira target version
+        id: run_gate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          JIRA_GATE_PENDING_SNAPSHOT: ${{ steps.pending.outputs.snapshot }}
+          JIRA_GATE_MODE: ${{ vars.JIRA_GATE_MODE || 'mock' }}
+          JIRA_GATE_VERSION: ${{ vars.JIRA_GATE_VERSION || '2026.4.0' }}
+          JIRA_FIELD_ID: ${{ vars.JIRA_FIELD_ID || 'customfield_12490' }}
+          JIRA_TICKET_PREFIX: ${{ vars.JIRA_TICKET_PREFIX || 'DEMO' }}
+          JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
+          JIRA_ALLOWED_HOST: ${{ vars.JIRA_ALLOWED_HOST }}
+          JIRA_EMAIL: >-
+            ${{ vars.JIRA_GATE_MODE == 'live' && secrets.JIRA_EMAIL || '' }}
+          JIRA_API_TOKEN: >-
+            ${{ vars.JIRA_GATE_MODE == 'live' && secrets.JIRA_API_TOKEN || '' }}
+        run: python3 tools/jira_gate/gate.py
+
+      - name: Report workflow/setup failure
+        if: failure()
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        env:
+          JIRA_GATE_MODE: ${{ vars.JIRA_GATE_MODE || 'mock' }}
+        with:
+          script: |
+            try {
+              const number = context.eventName === "workflow_dispatch"
+                ? Number(context.payload.inputs?.pr_number)
+                : Number(context.payload.pull_request?.number);
+              if (!Number.isSafeInteger(number) || number <= 0) {
+                core.setFailed(
+                  "Unable to identify the pull request for failure reporting."
+                );
+                return;
+              }
+              const result = await github.rest.pulls.get({
+                ...context.repo,
+                pull_number: number
+              });
+              const pull = result.data;
+              if (!/^[0-9a-f]{40}$/i.test(pull.head?.sha || "")) {
+                core.setFailed(
+                  "Unable to identify the current pull request head."
+                );
+                return;
+              }
+              const mock = process.env.JIRA_GATE_MODE !== "live";
+              await github.rest.repos.createCommitStatus({
+                ...context.repo,
+                sha: pull.head.sha,
+                state: "failure",
+                context: "jira-target-version",
+                description: mock
+                  ? "MOCK: synthetic target-version check failed"
+                  : "Jira target-version check failed"
+              });
+            } catch {
+              core.setFailed(
+                "Unable to report the Jira target-version failure status."
+              );
+            }
