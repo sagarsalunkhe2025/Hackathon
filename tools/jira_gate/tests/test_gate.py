@@ -183,6 +183,21 @@ class DescriptionParserTests(unittest.TestCase):
             ["DEMO-101", "DEMO-102"],
         )
 
+    def test_horizontal_rule_after_list_item_does_not_hide_tickets(self):
+        for entry in ("- DEMO-102", "* DEMO-102", "+ DEMO-102", "1. DEMO-102", "1) DEMO-102"):
+            body = f"## Jira tickets\nDEMO-101\n\n{entry}\n---\nDEMO-103"
+            with self.subTest(entry=entry):
+                self.assertEqual(
+                    gate.parse_pr_tickets("Synthetic change", body, "DEMO"),
+                    ["DEMO-101", "DEMO-102", "DEMO-103"],
+                )
+                pr = make_pr(title="Synthetic change", body=body)
+                with self.assertRaisesRegex(gate.GateFailure, "jira_validation_failed"):
+                    gate.run_validation(
+                        REPOSITORY, "pull_request_target", make_event(), "refs/heads/main",
+                        FakeGitHub(pr, pr), gate.MockJiraClient(), gate.GateConfig(),
+                    )
+
     def test_malformed_or_wrong_prefix_cannot_be_hidden_by_fallback(self):
         for key in ("DEMO-0", "DEMO-", "DEMO-ABC", "DEMO-1234567890", "OTHER-12"):
             for title, body in (

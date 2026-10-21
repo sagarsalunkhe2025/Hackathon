@@ -171,6 +171,12 @@ def jira_sections(body: Any) -> str:
                     continue
             if (
                 line.strip()
+                and heading is None
+                and not re.match(
+                    r"^(?: {4}|\t)|^ {0,3}(?:>|[-+*](?:[ \t]|$)|"
+                    r"[0-9]{1,9}[.)](?:[ \t]|$)|(?:[-*_][ \t]*){3,}$)",
+                    line,
+                )
                 and index + 1 < len(lines)
                 and re.fullmatch(r" {0,3}(?:=+|-+)[ \t]*", lines[index + 1])
             ):
