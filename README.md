@@ -211,6 +211,11 @@ also work. These URLs and tickets are examples only.
   wrong-prefix key fails). Repeating a key in a label and URL causes one lookup.
   Body URLs are never fetched; only identifiers go to the configured trusted
   Jira endpoint. Title and body are data, never executed.
+- Use inline Markdown or HTML links, not reference-style links such as
+  `[DEMO-101][ticket]`. Bracketed labels with
+  matching reference definitions anywhere in the body fail closed, preventing a
+  destination outside the Jira section from concealing another key. Plain
+  `[DEMO-101]` without a matching reference definition remains supported.
 - Limits: 512 title characters, 65,536 body characters, and ten unique keys
   across both sources. Oversized or non-string bodies fail closed.
 - The pending, initial, and final metadata snapshots include the whole body

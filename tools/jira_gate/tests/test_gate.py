@@ -226,6 +226,34 @@ class DescriptionParserTests(unittest.TestCase):
                 "DEMO-101", "## Jira tickets\n[DEMO-101](https://example.test/OTHER-12)", "DEMO"
             )
 
+    def test_reference_links_fail_closed_without_hiding_external_destinations(self):
+        for entry, definition in (
+            ("[DEMO-101][ticket]", "[ticket]: https://example.test/OTHER-12"),
+            ("[DEMO-101][]", "[DEMO-101]: https://example.test/DEMO-102"),
+            ("[DEMO-101]", "[demo-101]: https://example.test/DEMO-102"),
+        ):
+            with self.subTest(entry=entry), self.assertRaisesRegex(
+                gate.GateFailure, "unsupported_reference_link"
+            ):
+                gate.parse_pr_tickets(
+                    "Synthetic change",
+                    f"## Jira tickets\n{entry}\n## Notes\n{definition}",
+                    "DEMO",
+                )
+        self.assertEqual(
+            gate.parse_pr_tickets(
+                "Synthetic change",
+                "## Jira tickets\n[DEMO-101]\n## Notes\n"
+                "[unrelated]: https://example.test/OTHER-12",
+                "DEMO",
+            ),
+            ["DEMO-101"],
+        )
+        self.assertEqual(
+            gate.parse_pr_tickets("Synthetic change", "## Jira tickets\n[DEMO-101] [DEMO-102]", "DEMO"),
+            ["DEMO-101", "DEMO-102"],
+        )
+
     def test_body_and_combined_ticket_limits(self):
         for body in (42, [], "x" * (gate.MAX_BODY_LENGTH + 1)):
             with self.subTest(body_type=type(body)), self.assertRaisesRegex(

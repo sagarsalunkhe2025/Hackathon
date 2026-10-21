@@ -190,8 +190,18 @@ def parse_pr_tickets(title: Any, body: Any, prefix: str) -> list[str]:
     if not isinstance(title, str) or not title or len(title) > MAX_TITLE_LENGTH:
         raise GateFailure("invalid_title")
     title_tickets = _parse_ticket_keys(title, prefix)
+    section = jira_sections(body)
+    reference_labels = {
+        " ".join(label.split()).casefold()
+        for label in re.findall(r"(?m)^ {0,3}\[([^\]\n]+)\]:", body or "")
+    }
+    if any(
+        " ".join(label.split()).casefold() in reference_labels
+        for label in re.findall(r"\[([^\]\n]+)\]", section)
+    ):
+        raise GateFailure("unsupported_reference_link")
     # Validate keys in both link labels and destinations, never fetch body URLs.
-    section = urllib.parse.unquote(html.unescape(jira_sections(body)))
+    section = urllib.parse.unquote(html.unescape(section))
     body_tickets = _parse_ticket_keys(section, prefix)
     tickets = list(dict.fromkeys(title_tickets + body_tickets))
     if len(tickets) > MAX_TICKETS:
