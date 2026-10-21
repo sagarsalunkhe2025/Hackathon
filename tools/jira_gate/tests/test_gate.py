@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -20,6 +21,7 @@ OTHER_SHA = "b" * 40
 def make_pr(
     *,
     title="DEMO-101: synthetic example",
+    body=None,
     sha=SHA,
     state="open",
     base=gate.TARGET_BRANCH,
@@ -30,6 +32,7 @@ def make_pr(
         "number": 7,
         "state": state,
         "title": title,
+        "body": body,
         "base": {"ref": base, "repo": {"full_name": base_repo}},
         "head": {
             "sha": sha,
@@ -118,6 +121,117 @@ class TitleParserTests(unittest.TestCase):
         )
 
 
+class DescriptionParserTests(unittest.TestCase):
+    def test_description_only_plain_bracketed_and_linked_keys(self):
+        for entry in (
+            "DEMO-101 Synthetic change",
+            "[DEMO-101] Synthetic change",
+            "[DEMO-101](https://example.atlassian.net/browse/DEMO-101) Synthetic change",
+            '<a href="https://example.atlassian.net/browse/DEMO-101">DEMO-101</a> Synthetic change',
+        ):
+            with self.subTest(entry=entry):
+                self.assertEqual(
+                    gate.parse_pr_tickets("Synthetic change", "## Jira tickets\n" + entry, "DEMO"),
+                    ["DEMO-101"],
+                )
+
+    def test_combines_sources_and_all_sections_in_first_seen_order(self):
+        self.assertEqual(
+            gate.parse_pr_tickets(
+                "DEMO-101 Synthetic change",
+                "## JIRA TICKETS\n[demo-101] DEMO-102\n"
+                "## Notes\nDEMO-999\n## Jira tickets ##\nDEMO-103",
+                "DEMO",
+            ),
+            ["DEMO-101", "DEMO-102", "DEMO-103"],
+        )
+
+    def test_null_missing_and_empty_bodies_allow_title_only(self):
+        for body in (None, ""):
+            self.assertEqual(gate.parse_pr_tickets("DEMO-101", body, "DEMO"), ["DEMO-101"])
+        pr = make_pr()
+        del pr["body"]
+        self.assertEqual(gate.validate_pr_structure(pr, REPOSITORY, gate.GateConfig()), ["DEMO-101"])
+
+    def test_requires_a_key_in_authoritative_sources(self):
+        for body in (
+            None, "", "DEMO-101", "## Notes\nDEMO-101", "### Jira tickets\nDEMO-101",
+            "## Jira tickets\n\n## Notes\nDEMO-101",
+            "```\n## Jira tickets\nDEMO-101\n```",
+        ):
+            with self.subTest(body=body), self.assertRaisesRegex(gate.GateFailure, "missing_ticket"):
+                gate.parse_pr_tickets("Synthetic change", body, "DEMO")
+
+    def test_markdown_heading_boundaries(self):
+        for boundary in ("## Notes", "# Notes", "Notes\n=====", "Notes\n-----"):
+            with self.subTest(boundary=boundary):
+                self.assertEqual(
+                    gate.parse_pr_tickets(
+                        "Synthetic change",
+                        "## Jira tickets\nDEMO-101\n### Details DEMO-102\n"
+                        + boundary + "\nOTHER-999",
+                        "DEMO",
+                    ),
+                    ["DEMO-101", "DEMO-102"],
+                )
+        self.assertEqual(
+            gate.parse_pr_tickets(
+                "Synthetic change",
+                "## Jira tickets\nDEMO-101\n```\n## Notes\n```\nDEMO-102",
+                "DEMO",
+            ),
+            ["DEMO-101", "DEMO-102"],
+        )
+
+    def test_malformed_or_wrong_prefix_cannot_be_hidden_by_fallback(self):
+        for key in ("DEMO-0", "DEMO-", "DEMO-ABC", "DEMO-1234567890", "OTHER-12"):
+            for title, body in (
+                (key, "## Jira tickets\nDEMO-101"),
+                ("DEMO-101", "## Jira tickets\n" + key),
+            ):
+                with self.subTest(title=title, body=body), self.assertRaisesRegex(
+                    gate.GateFailure, "invalid_ticket_key"
+                ):
+                    gate.parse_pr_tickets(title, body, "DEMO")
+
+    def test_conflicting_link_keys_are_both_validated(self):
+        for entry in (
+            "[DEMO-101](https://example.atlassian.net/browse/DEMO-102)",
+            '<a href="https://example.atlassian.net/browse/DEMO-102">DEMO-101</a>',
+            "[DEMO-101](https://example.atlassian.net/browse/DEMO%2D102)",
+            '<a href="https://example.atlassian.net/browse/DEMO&#45;102">DEMO-101</a>',
+        ):
+            with self.subTest(entry=entry):
+                self.assertEqual(
+                    set(gate.parse_pr_tickets("Synthetic change", "## Jira tickets\n" + entry, "DEMO")),
+                    {"DEMO-101", "DEMO-102"},
+                )
+        with self.assertRaisesRegex(gate.GateFailure, "invalid_ticket_key"):
+            gate.parse_pr_tickets(
+                "DEMO-101", "## Jira tickets\n[DEMO-101](https://example.test/OTHER-12)", "DEMO"
+            )
+
+    def test_body_and_combined_ticket_limits(self):
+        for body in (42, [], "x" * (gate.MAX_BODY_LENGTH + 1)):
+            with self.subTest(body_type=type(body)), self.assertRaisesRegex(
+                gate.GateFailure, "invalid_body"
+            ):
+                gate.parse_pr_tickets("DEMO-101", body, "DEMO")
+        self.assertEqual(
+            gate.parse_pr_tickets("DEMO-101", "x" * gate.MAX_BODY_LENGTH, "DEMO"),
+            ["DEMO-101"],
+        )
+        for title_count in (0, 5):
+            with self.subTest(title_count=title_count), self.assertRaisesRegex(
+                gate.GateFailure, "too_many_tickets"
+            ):
+                gate.parse_pr_tickets(
+                    "Synthetic change " + " ".join(f"DEMO-{i}" for i in range(1, title_count + 1)),
+                    "## Jira tickets\n" + " ".join(f"DEMO-{i}" for i in range(title_count + 1, 12)),
+                    "DEMO",
+                )
+
+
 class JiraFieldTests(unittest.TestCase):
     def test_reads_only_exact_custom_field_option_value(self):
         issue = {
@@ -145,6 +259,13 @@ class JiraFieldTests(unittest.TestCase):
 
 
 class ConfigurationAndMockTests(unittest.TestCase):
+    def test_live_client_selection_does_not_use_mock_or_connect(self):
+        with patch.object(gate, "LiveJiraClient") as live, patch.object(gate, "MockJiraClient") as mock:
+            config = gate.GateConfig(mode="live")
+            self.assertIs(gate.create_jira_client(config), live.return_value)
+            live.assert_called_once_with(config)
+            mock.assert_not_called()
+
     def test_mock_mode_uses_only_synthetic_fixtures(self):
         client = gate.create_jira_client(gate.GateConfig())
         self.assertIsInstance(client, gate.MockJiraClient)
@@ -235,6 +356,73 @@ class ConfigurationAndMockTests(unittest.TestCase):
 
 
 class PullRequestValidationTests(unittest.TestCase):
+    def test_description_only_and_duplicate_keys_use_mock_client(self):
+        pr = make_pr(
+            title="Synthetic change",
+            body="## Jira tickets\n[DEMO-101](https://untrusted.example.test/DEMO-101)",
+        )
+        jira = gate.MockJiraClient()
+        with patch.object(jira, "get_issue", wraps=jira.get_issue) as lookup:
+            result = gate.run_validation(
+                REPOSITORY, "pull_request_target", make_event(action="edited"),
+                "refs/heads/main", FakeGitHub(pr, pr), jira, gate.GateConfig(),
+            )
+        self.assertEqual(result["tickets_validated"], 1)
+        lookup.assert_called_once_with("DEMO-101")
+
+    def test_body_cannot_override_mismatching_title_or_link_destination(self):
+        for title, body in (
+            ("DEMO-102", "## Jira tickets\nDEMO-101"),
+            ("DEMO-101", "## Jira tickets\nDEMO-102"),
+            ("Synthetic change", "## Jira tickets\nDEMO-101 DEMO-102 DEMO-103"),
+            ("Synthetic change", "## Jira tickets\n[DEMO-101](https://example.test/DEMO-102)"),
+        ):
+            pr = make_pr(title=title, body=body)
+            with self.subTest(title=title, body=body), self.assertRaisesRegex(
+                gate.GateFailure, "jira_validation_failed"
+            ):
+                gate.run_validation(
+                    REPOSITORY, "pull_request_target", make_event(), "refs/heads/main",
+                    FakeGitHub(pr, pr), gate.MockJiraClient(), gate.GateConfig(),
+                )
+
+    def test_body_change_between_pending_initial_and_final_reads_blocks(self):
+        initial = make_pr(body="## Jira tickets\nDEMO-101")
+        changed = make_pr(body="## Jira tickets\nDEMO-102")
+        for pulls, expected_lookups in (((changed,), []), ((initial, changed), ["DEMO-101"])):
+            jira = FakeJira(
+                {"DEMO-101": {"fields": {"customfield_12490": {"value": "2026.4.0"}}}}
+            )
+            with self.subTest(reads=len(pulls)), self.assertRaisesRegex(
+                gate.GateFailure, "pull_request_changed"
+            ):
+                gate.run_validation(
+                    REPOSITORY, "pull_request_target", make_event(), "refs/heads/main",
+                    FakeGitHub(*pulls), jira, gate.GateConfig(),
+                    expected_snapshot=json.dumps(gate.snapshot_pr(initial)),
+                )
+            self.assertEqual(jira.lookups, expected_lookups)
+
+    def test_workflow_and_python_snapshots_have_identical_order_and_normalization(self):
+        workflow = Path(__file__).resolve().parents[3] / ".github/workflows/jira-target-version.yml"
+        source = workflow.read_text(encoding="utf-8")
+        snapshot_js = source.split("const snapshot = ", 1)[1].split(";", 1)[0]
+        for body in (None, "", "## Jira tickets\n[DEMO-101] Synthetic change\né"):
+            pr = make_pr(body=body)
+            for missing in (False, True):
+                pull = dict(pr)
+                if missing:
+                    del pull["body"]
+                result = subprocess.run(
+                    ["node", "-e",
+                     "const pull = JSON.parse(process.argv[1]);"
+                     f"console.log(JSON.stringify({snapshot_js}));",
+                     json.dumps(pull)],
+                    check=True, capture_output=True, text=True,
+                )
+                self.assertEqual(json.loads(result.stdout), list(gate.snapshot_pr(pull)))
+                gate._validate_expected_snapshot(pull, result.stdout)
+
     def test_requires_expected_repository_destination_and_open_pr(self):
         for pr in (
             make_pr(base="main"),

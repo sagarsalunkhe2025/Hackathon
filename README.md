@@ -134,13 +134,15 @@ credentials or network calls are needed for tests.
 
 ### Install and test
 
-1. Review and merge this installation PR into the repository's default `main`
-   branch; do not enable auto-merge. The initial PR cannot run a
-   `pull_request_target` workflow that is not yet installed on `main`, and
-   `workflow_dispatch` is available only after the workflow is on the default
-   branch. Use a separate, subsequent test PR.
-2. After installation, create `test-jira-gate-2026.4.0` from `main`. The gate
-   does not create branches or alter rulesets.
+1. Review and merge this parser update into the repository's default `main`
+   branch **before testing description parsing**; do not enable auto-merge.
+   `pull_request_target` runs the installed trusted default-branch version,
+   not the parser on a test PR's head. Manual runs must also select `main`.
+   Use a separate, subsequent test PR.
+2. After installation, create `test-jira-gate-2026.4.0` from `main` if it does
+   not already exist. It remains the only test PR destination; `main` hosts the
+   workflow, but is not a Jira-gated destination. The gate does not create
+   branches or alter rulesets.
 3. Create a test-only branch ruleset, initially **Disabled**, targeting exactly
    `test-jira-gate-2026.4.0`. Require the exact status context
    `jira-target-version`; the workflow job is named **Trusted Jira validator**.
@@ -160,25 +162,76 @@ credentials or network calls are needed for tests.
    | `DEMO-101: synthetic matching example` | `MOCK:` pass |
    | `DEMO-102: synthetic mismatch example` | `MOCK:` failure |
    | `DEMO-101 and DEMO-102: synthetic multiple-ticket example` | failure; every ticket must match |
-   | `Synthetic title without a ticket` | failure |
+   | `Synthetic title without a ticket` | failure unless the Jira section supplies tickets |
    | `DEMO-103: synthetic absent-field example` | failure |
    | `DEMO-404: synthetic nonexistent-ticket example` | failure |
    | `DEMO-500: synthetic API-error example` | failure |
 
-   Also edit a title, push a new commit, and manually re-run **Jira target-version
+   Also edit a title and description, push a new commit, and manually re-run **Jira target-version
    gate** from `main` with the PR number. The gate re-fetches current PR metadata,
    validates the current head SHA, and reports the exact status on that SHA.
    Confirm a matching status blocks/permits merging only as expected alongside
    the other rules.
 
+### PR description format
+
+Use this copyable synthetic section with an ordinary title such as
+`Synthetic change`:
+
+```markdown
+## Jira tickets
+
+[DEMO-101](https://example.atlassian.net/browse/DEMO-101) Synthetic change
+
+## Notes
+
+Non-authoritative discussion goes here.
+```
+
+The key renders as a clickable link followed by its summary. Plain `DEMO-101`,
+bracketed `[DEMO-101]`, and
+`<a href="https://example.atlassian.net/browse/DEMO-101">DEMO-101</a> Synthetic change`
+also work. These URLs and tickets are examples only.
+
+- The section starts at an ATX level-two heading `## Jira tickets` (label is
+  case-insensitive; optional closing `##` is accepted). It ends at the next
+  level-one or level-two heading, including Setext headings. Lower-level
+  headings stay inside the section. Fenced-code headings do not start or end
+  sections; keys inside an already active section are still validated.
+- All matching sections are combined in document order. Incidental references
+  outside them are ignored. Empty, missing, or null bodies supply no tickets.
+- Title and section keys are combined, uppercased, and deduplicated. **Every
+  key must match** the expected version. A matching body cannot override a
+  mismatching title; neither source supplying a key fails.
+- Keys must use the configured prefix and a positive one-to-nine-digit number.
+  Malformed configured-prefix keys and wrong-prefix numeric keys fail in either
+  source; they do not enable fallback to the other source.
+- Link labels **and destinations** contribute keys, including percent-encoded
+  or HTML-entity-encoded keys. If they differ, both must pass (or the malformed/
+  wrong-prefix key fails). Repeating a key in a label and URL causes one lookup.
+  Body URLs are never fetched; only identifiers go to the configured trusted
+  Jira endpoint. Title and body are data, never executed.
+- Limits: 512 title characters, 65,536 body characters, and ten unique keys
+  across both sources. Oversized or non-string bodies fail closed.
+- The pending, initial, and final metadata snapshots include the whole body
+  (null/missing normalized to empty). Description changes during validation fail
+  the run; the existing `edited` event starts revalidation after description edits.
+
 ### Optional private live-mode configuration
 
 Live mode is opt-in and is not needed to install or test the mock gate. Because
-this is a **public repository**, Actions logs and commit statuses may be visible
-publicly. Prefer a private test repository for corporate Jira integration, and
-obtain the organization's permission before creating Jira credentials. Never
-put a Jira URL, ticket prefix, real ticket key/title, response, or credential in
-source, fixtures, PR text, or logs.
+this repository was **public** when this update was requested, do not assume it
+has become private. Actions logs, PR text, and statuses may be public. Keep all
+committed examples, fixtures, and public artifacts synthetic. Never commit
+credentials, real corporate hostnames, ticket keys/titles, or private source.
+Changing visibility is a manual owner decision, not performed by this update.
+
+**Private visibility is not corporate authorization.** Obtain organizational
+approval before connecting corporate Jira or storing its credentials. Private
+repositories on a personal GitHub Free account do **not** support ruleset
+enforcement; GitHub Pro is required for that private-repository demonstration.
+A live lookup passing is not proof of enforced merge blocking. No visibility,
+billing, ruleset, secret, or other repository settings are changed automatically.
 
 Only after review and approval, configure trusted repository Actions variables:
 
@@ -189,7 +242,7 @@ Only after review and approval, configure trusted repository Actions variables:
 | `JIRA_ALLOWED_HOST` | Exact lowercase hostname approved for `JIRA_BASE_URL` |
 | `JIRA_GATE_VERSION` | Expected option text; defaults to `2026.4.0` |
 | `JIRA_FIELD_ID` | Custom field ID; defaults to `customfield_12490` |
-| `JIRA_TICKET_PREFIX` | Approved PR-title ticket prefix; defaults to synthetic `DEMO` |
+| `JIRA_TICKET_PREFIX` | Approved title/section ticket prefix; defaults to synthetic `DEMO` |
 
 Add Actions secrets `JIRA_EMAIL` and `JIRA_API_TOKEN` for a read-only Jira service
 account. Configure the real prefix and approved Jira URL privately in repository
@@ -197,6 +250,38 @@ settings; do not put either in a commit or PR. The workflow only makes bounded
 HTTPS GET requests to the exact approved host, rejects redirects, and emits
 generic live-mode status/log messages. Live validation rejects fork PRs; there
 is no public-fork Jira lookup policy in this proof of concept.
+
+**Authentication compatibility:** the existing client supports an HTTPS site
+root plus `/rest/api/3`, using email + an **unscoped site API token**, only if
+approved by your organization. Scoped Atlassian API tokens require
+`https://api.atlassian.com/ex/jira/{cloudId}`, which this client's site-root URL
+validator rejects. Scoped-gateway support is not implemented here and needs a
+separate follow-up. Do not weaken organizational token policy; if scoped tokens
+are required, stop before enabling live mode.
+
+After the parser update is merged into `main`:
+
+1. Confirm privacy, organizational authorization, compatible authentication, and
+   the account plan/enforcement prerequisites above. Leave mock mode enabled
+   until these are resolved.
+2. In **Settings → Secrets and variables → Actions**, set the approved values
+   for the five non-mode variables above and add the two secrets. `JIRA_EMAIL`
+   is a **secret**, not a variable. Use an approved least-privilege read account.
+   Set `JIRA_GATE_MODE=live` **last**.
+3. In the approved private testing context only, prepare an authorized test
+   issue with `customfield_12490.value` equal to `2026.4.0` (or your explicitly
+   configured field/version). Do not copy corporate details to public artifacts.
+4. Open or edit a same-repository PR into `test-jira-gate-2026.4.0`, using the
+   approved key in its title or the exact Jira section above. Do not use a fork.
+5. Choose **Actions → Jira target-version gate → Run workflow**, select **main**,
+   and enter that open PR's number. It fetches actual current PR metadata,
+   rather than trusting a stale event title/body. Look for the exact
+   `jira-target-version` status and the generic message
+   `Jira target-version check passed` without `MOCK:`.
+6. Repeat with an authorized mismatching version and verify failure and merge
+   blocking as a non-bypass user. Manually dispatch again after **configuration
+   or Jira-only changes**: neither automatically starts a PR workflow.
+   Switch `JIRA_GATE_MODE` back to `mock` when finished and revalidate.
 
 ### Limits
 
