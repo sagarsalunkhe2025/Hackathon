@@ -107,7 +107,8 @@ jobs:
               pull.head.sha,
               pull.base.ref,
               pull.base.repo?.full_name,
-              pull.head.repo?.full_name ?? null
+              pull.head.repo?.full_name ?? null,
+              pull.body ?? ""
             ];
             await github.rest.repos.createCommitStatus({
               ...context.repo,

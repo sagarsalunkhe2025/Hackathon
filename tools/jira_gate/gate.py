@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import html
 import json
 import os
 import re
@@ -23,6 +24,7 @@ DEFAULT_FIELD_ID = "customfield_12490"
 DEFAULT_TICKET_PREFIX = "DEMO"
 STATUS_CONTEXT = "jira-target-version"
 MAX_TITLE_LENGTH = 512
+MAX_BODY_LENGTH = 65_536
 MAX_TICKETS = 10
 MAX_RESPONSE_BYTES = 65_536
 HTTP_TIMEOUT_SECONDS = 10
@@ -107,7 +109,13 @@ def validate_jira_url(base_url: str, allowed_host: str) -> str:
 def parse_title_tickets(title: Any, prefix: str) -> list[str]:
     if not isinstance(title, str) or not title or len(title) > MAX_TITLE_LENGTH:
         raise GateFailure("invalid_title")
+    tickets = _parse_ticket_keys(title, prefix)
+    if not tickets:
+        raise GateFailure("missing_ticket")
+    return tickets
 
+
+def _parse_ticket_keys(text: str, prefix: str) -> list[str]:
     expected_prefix = prefix.upper()
     tickets: list[str] = []
     seen: set[str] = set()
@@ -118,7 +126,7 @@ def parse_title_tickets(title: Any, prefix: str) -> list[str]:
     candidates = [
         (match.start(), match.group(1).upper())
         for pattern in (configured_ticket_re, GENERIC_TICKET_RE)
-        for match in pattern.finditer(title)
+        for match in pattern.finditer(text)
     ]
     for _, candidate in sorted(candidates):
         valid = re.fullmatch(
@@ -132,6 +140,72 @@ def parse_title_tickets(title: Any, prefix: str) -> list[str]:
             tickets.append(candidate)
             if len(tickets) > MAX_TICKETS:
                 raise GateFailure("too_many_tickets")
+    return tickets
+
+
+def jira_sections(body: Any) -> str:
+    if body is None:
+        return ""
+    if not isinstance(body, str) or len(body) > MAX_BODY_LENGTH:
+        raise GateFailure("invalid_body")
+    lines = body.splitlines()
+    selected: list[str] = []
+    active = False
+    fence = ""
+    for index, line in enumerate(lines):
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if marker:
+            run = marker.group(1)
+            if not fence:
+                fence = run
+            elif run[0] == fence[0] and len(run) >= len(fence) and not line[marker.end():].strip():
+                fence = ""
+            continue
+        if not fence:
+            heading = re.match(r"^ {0,3}(#{1,6})(?:[ \t]+(.*)|[ \t]*)$", line)
+            if heading:
+                level = len(heading.group(1))
+                label = re.sub(r"[ \t]+#+[ \t]*$", "", heading.group(2) or "").strip()
+                if level <= 2:
+                    active = level == 2 and label.casefold() == "jira tickets"
+                    continue
+            if (
+                line.strip()
+                and heading is None
+                and not re.match(
+                    r"^(?: {4}|\t)|^ {0,3}(?:>|[-+*](?:[ \t]|$)|"
+                    r"[0-9]{1,9}[.)](?:[ \t]|$)|(?:[-*_][ \t]*){3,}$)",
+                    line,
+                )
+                and index + 1 < len(lines)
+                and re.fullmatch(r" {0,3}(?:=+|-+)[ \t]*", lines[index + 1])
+            ):
+                active = False
+        if active:
+            selected.append(line)
+    return "\n".join(selected)
+
+
+def parse_pr_tickets(title: Any, body: Any, prefix: str) -> list[str]:
+    if not isinstance(title, str) or not title or len(title) > MAX_TITLE_LENGTH:
+        raise GateFailure("invalid_title")
+    title_tickets = _parse_ticket_keys(title, prefix)
+    section = jira_sections(body)
+    reference_labels = {
+        " ".join(label.split()).casefold()
+        for label in re.findall(r"(?m)^ {0,3}\[([^\]\n]+)\]:", body or "")
+    }
+    if any(
+        " ".join(label.split()).casefold() in reference_labels
+        for label in re.findall(r"\[([^\]\n]+)\]", section)
+    ):
+        raise GateFailure("unsupported_reference_link")
+    # Validate keys in both link labels and destinations, never fetch body URLs.
+    section = urllib.parse.unquote(html.unescape(section))
+    body_tickets = _parse_ticket_keys(section, prefix)
+    tickets = list(dict.fromkeys(title_tickets + body_tickets))
+    if len(tickets) > MAX_TICKETS:
+        raise GateFailure("too_many_tickets")
     if not tickets:
         raise GateFailure("missing_ticket")
     return tickets
@@ -174,6 +248,7 @@ def snapshot_pr(pr: Mapping[str, Any]) -> tuple[Any, ...]:
         base.get("ref"),
         base_repo.get("full_name"),
         head_repo.get("full_name") if isinstance(head_repo, Mapping) else None,
+        pr.get("body") if pr.get("body") is not None else "",
     )
 
 
@@ -193,7 +268,7 @@ def validate_pr_structure(
         raise GateFailure("invalid_head_sha")
     if config.mode == "live" and snapshot_pr(pr)[6] != repository:
         raise GateFailure("live_mode_fork_rejected")
-    return parse_title_tickets(pr.get("title"), config.ticket_prefix)
+    return parse_pr_tickets(pr.get("title"), pr.get("body"), config.ticket_prefix)
 
 
 class GitHubApi:
